@@ -42,6 +42,14 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     std::mutex global;
     std::vector<std::mutex> link_list_locks_;
 
+    // stat 
+    std::vector<std::atomic<int>> lock_contention_counts_;
+    std::vector<std::atomic<long long>> lock_contention_time_;
+
+    std::vector<std::atomic<long long>> lock_contention_search_layer_time_;
+    std::vector<std::atomic<long long>> lock_contention_search_layer0_time_;
+    std::vector<std::atomic<long long>> lock_contention_link_time_;
+
     tableint enterpoint_node_{0};
 
     size_t size_links_level0_{0};
@@ -141,8 +149,35 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         size_links_per_element_ = maxM_ * sizeof(tableint) + sizeof(linklistsizeint);
         mult_ = 1 / log(1.0 * M_);
         revSize_ = 1.0 / mult_;
-    }
 
+        // contention count
+        lock_contention_counts_ = std::vector<std::atomic<int>>(max_elements_);  
+        for (size_t i = 0; i < max_elements_; ++i) {
+            lock_contention_counts_[i].store(0);  
+        }
+
+        lock_contention_time_ = std::vector<std::atomic<long long>>(max_elements_);  
+        for (size_t i = 0; i < lock_contention_time_.size(); ++i) {
+            lock_contention_time_[i].store(0);  
+        }
+
+        lock_contention_search_layer_time_ = std::vector<std::atomic<long long>>(max_elements_);
+        for (size_t i = 0; i < lock_contention_search_layer_time_.size(); ++i) {
+            lock_contention_search_layer_time_[i].store(0);  
+        }
+
+        lock_contention_search_layer0_time_ = std::vector<std::atomic<long long>>(max_elements_);
+        for (size_t i = 0; i < lock_contention_search_layer0_time_.size(); ++i) {
+            lock_contention_search_layer0_time_[i].store(0);  
+        }
+
+        lock_contention_link_time_ = std::vector<std::atomic<long long>>(max_elements_);
+        for (size_t i = 0; i < lock_contention_link_time_.size(); ++i) {
+            lock_contention_link_time_[i].store(0);  
+        }
+
+        std::cout << "=========== v1.8" << std::endl;
+    }
 
     ~HierarchicalNSW() {
         clear();
@@ -252,7 +287,17 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
             tableint curNodeNum = curr_el_pair.second;
 
-            std::unique_lock <std::mutex> lock(link_list_locks_[curNodeNum]);
+            std::unique_lock <std::mutex> lock(link_list_locks_[curNodeNum], std::defer_lock);
+
+            if (!lock.try_lock()) {
+                auto start_time = std::chrono::high_resolution_clock::now();
+                
+                lock.lock();
+                auto end_time = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+
+                lock_contention_search_layer0_time_[curNodeNum] += duration;
+            } 
 
             int *data;  // = (int *)(linkList0_ + curNodeNum * size_links_per_element0_);
             if (layer == 0) {
@@ -509,6 +554,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> &top_candidates,
         int level,
         bool isUpdate) {
+
         size_t Mcurmax = level ? maxM_ : maxM0_;
         getNeighborsByHeuristic2(top_candidates, M_);
         if (top_candidates.size() > M_)
@@ -528,7 +574,16 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             // because during the addition the lock for cur_c is already acquired
             std::unique_lock <std::mutex> lock(link_list_locks_[cur_c], std::defer_lock);
             if (isUpdate) {
-                lock.lock();
+                if (!lock.try_lock()) {
+                    std::cout << "blocking checkpont 1" << std::endl;
+                    auto start_time = std::chrono::high_resolution_clock::now();
+                    
+                    lock.lock();
+                    auto end_time = std::chrono::high_resolution_clock::now();
+                    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+
+                    lock_contention_link_time_[cur_c] += duration;
+                } 
             }
             linklistsizeint *ll_cur;
             if (level == 0)
@@ -547,12 +602,23 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 if (level > element_levels_[selectedNeighbors[idx]])
                     throw std::runtime_error("Trying to make a link on a non-existent level");
 
+                // link cur_c with its neighbors
                 data[idx] = selectedNeighbors[idx];
             }
         }
 
         for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
-            std::unique_lock <std::mutex> lock(link_list_locks_[selectedNeighbors[idx]]);
+            std::unique_lock <std::mutex> lock(link_list_locks_[selectedNeighbors[idx]], std::defer_lock);
+
+            if (!lock.try_lock()) {
+                auto start_time = std::chrono::high_resolution_clock::now();
+                
+                lock.lock();
+                auto end_time = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+
+                lock_contention_link_time_[cur_c] += duration;
+            } 
 
             linklistsizeint *ll_other;
             if (level == 0)
@@ -610,18 +676,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     }
 
                     setListCount(ll_other, indx);
-                    // Nearest K:
-                    /*int indx = -1;
-                    for (int j = 0; j < sz_link_list_other; j++) {
-                        dist_t d = fstdistfunc_(getDataByInternalId(data[j]), getDataByInternalId(rez[idx]), dist_func_param_);
-                        if (d > d_max) {
-                            indx = j;
-                            d_max = d;
-                        }
-                    }
-                    if (indx >= 0) {
-                        data[indx] = cur_c;
-                    } */
                 }
             }
         }
@@ -1053,7 +1107,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 getNeighborsByHeuristic2(candidates, layer == 0 ? maxM0_ : maxM_);
 
                 {
-                    std::unique_lock <std::mutex> lock(link_list_locks_[neigh]);
+                    std::unique_lock <std::mutex> lock(link_list_locks_[neigh]);             
+
                     linklistsizeint *ll_cur;
                     ll_cur = get_linklist_at_level(neigh, layer);
                     size_t candSize = candidates.size();
@@ -1085,7 +1140,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 while (changed) {
                     changed = false;
                     unsigned int *data;
-                    std::unique_lock <std::mutex> lock(link_list_locks_[currObj]);
+                    std::unique_lock <std::mutex> lock(link_list_locks_[currObj]);            
+
                     data = get_linklist_at_level(currObj, level);
                     int size = getListCount(data);
                     tableint *datal = (tableint *) (data + 1);
@@ -1141,6 +1197,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     std::vector<tableint> getConnectionsWithLock(tableint internalId, int level) {
         std::unique_lock <std::mutex> lock(link_list_locks_[internalId]);
+
         unsigned int *data = get_linklist_at_level(internalId, level);
         int size = getListCount(data);
         std::vector<tableint> result(size);
@@ -1218,7 +1275,18 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     while (changed) {
                         changed = false;
                         unsigned int *data;
-                        std::unique_lock <std::mutex> lock(link_list_locks_[currObj]);
+                        std::unique_lock <std::mutex> lock(link_list_locks_[currObj], std::defer_lock);
+
+                        if (!lock.try_lock()) {
+                            auto start_time = std::chrono::high_resolution_clock::now();
+                            
+                            lock.lock();
+                            auto end_time = std::chrono::high_resolution_clock::now();
+                            auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+
+                            lock_contention_search_layer_time_[currObj] += duration;
+                        }  
+
                         data = get_linklist(currObj, level);
                         int size = getListCount(data);
 
@@ -1407,6 +1475,63 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             std::cout << "Min inbound: " << min1 << ", Max inbound:" << max1 << "\n";
         }
         std::cout << "integrity ok, checked " << connections_checked << " connections\n";
+    }
+
+    void printStat() {
+        int num_locks_with_contention = 0;
+        int total_contention = 0;
+
+        for (size_t i = 0; i < lock_contention_counts_.size(); ++i) {
+            total_contention += lock_contention_counts_[i];
+            if (lock_contention_counts_[i] > 0) {
+                num_locks_with_contention++;
+            }
+        }
+
+        double average_contention = 0.0;
+        if (num_locks_with_contention > 0) {
+            average_contention = static_cast<double>(total_contention) / num_locks_with_contention;
+        }
+
+        // std::cout << "Total lock contention: " << total_contention << "\n";
+        // std::cout << "Average lock contention per lock: " << average_contention << "\n";
+
+        long long total_contention_time = 0;
+        num_locks_with_contention = 0;
+
+        for (size_t i = 0; i < lock_contention_time_.size(); ++i) {
+            total_contention_time += lock_contention_time_[i];
+            if (lock_contention_counts_[i] > 0) {
+                num_locks_with_contention++;
+            }
+        }
+
+        double average_contention_time = 0.0;
+        if (num_locks_with_contention > 0) {
+            average_contention_time = static_cast<double>(total_contention_time) / num_locks_with_contention;
+        }
+
+        // std::cout << "Total lock contention time (in ns): " << total_contention_time << std::endl;
+        // std::cout << "Average lock contention time per lock (in ns): " << average_contention_time << std::endl;
+
+        long long total_lock_contention_search_layer_time_ = 0;
+        long long total_lock_contention_search_layer0_time_ = 0;
+        long long total_lock_contention_link_time_ = 0;
+
+        for (size_t i = 0; i < lock_contention_search_layer_time_.size(); ++i) {
+            total_lock_contention_search_layer_time_ += lock_contention_search_layer_time_[i];
+        }
+        std::cout << "Total lock contention of search layer time (in ns): " << total_lock_contention_search_layer_time_ << std::endl;
+
+        for (size_t i = 0; i < lock_contention_search_layer0_time_.size(); ++i) {
+            total_lock_contention_search_layer0_time_ += lock_contention_search_layer0_time_[i];
+        }     
+        std::cout << "Total lock contention of search layer0 time (in ns): " << total_lock_contention_search_layer0_time_ << std::endl;
+
+        for (size_t i = 0; i < lock_contention_link_time_.size(); ++i) {
+            total_lock_contention_link_time_ += lock_contention_link_time_[i];
+        }
+        std::cout << "Total lock contention of link time (in ns): " << total_lock_contention_link_time_ << std::endl;
     }
 };
 }  // namespace hnswlib
