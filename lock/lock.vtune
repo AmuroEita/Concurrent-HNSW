@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root>
+ <rdmgr>
+  <timestamp type="u64_t">1736744542</timestamp>
+  <hostname type="string">ntu</hostname>
+  <os type="string">linux</os>
+  <product type="string">Intel® VTune™ Profiler 2025.0.1</product>
+  <buildNumber type="s32_t">629235</buildNumber>
+  <logicalCPUCount type="s32_t">48</logicalCPUCount>
+  <physicalCoreCount type="s32_t">24</physicalCoreCount>
+  <processorPackageCount type="s32_t">1</processorPackageCount>
+  <CPUFrequency type="s64_t">1525635000</CPUFrequency>
+  <CPUFamily type="s32_t">6</CPUFamily>
+  <CPUModel type="s32_t">143</CPUModel>
+  <CPUStepping type="s32_t">8</CPUStepping>
+  <CPUBrandName type="string">Intel(R) Xeon(R) w7-3455</CPUBrandName>
+  <isa type="string">avx512</isa>
+  <collectionTimeBegin type="u64_t">1736744542</collectionTimeBegin>
+  <collectionTimeEnd type="u64_t">1736744547</collectionTimeEnd>
+  <variables>
+   <at type="string">tr</at>
+  </variables>
+ </rdmgr>
+</root>
